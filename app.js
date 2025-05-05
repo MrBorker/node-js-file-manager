@@ -2,12 +2,12 @@ import readline from "node:readline";
 import fs from "node:fs/promises";
 import { readdir, mkdir, rename, unlink } from "node:fs/promises";
 import { resolve, dirname, basename } from "node:path";
-import { fileURLToPath } from "node:url";
+import crypto from "node:crypto";
 import { createReadStream, createWriteStream } from "fs";
+import os from "node:os";
+import { createBrotliCompress, createBrotliDecompress } from "node:zlib";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const filePath = resolve(__dirname);
+let currentDir = os.homedir();
 
 let username;
 
@@ -19,7 +19,7 @@ const parseArgs = () => {
         arg.slice(arg.indexOf("=") + 2);
       username = name;
       console.log(`Welcome to the File Manager, ${name}!`);
-      console.log(`You are currently in ${__dirname}`);
+      console.log(`You are currently in ${currentDir}`);
     }
   });
 };
@@ -39,9 +39,37 @@ rl.on("line", async (input) => {
   const [command, ...args] = input.trim().split(" ");
 
   switch (command) {
+    case "up":
+      try {
+        const parentDir = dirname(currentDir);
+        if (parentDir !== currentDir) {
+          currentDir = parentDir;
+        }
+      } catch {
+        console.log("Operation failed");
+      }
+      break;
+    case "cd":
+      try {
+        if (!args[0]) {
+          console.log("Invalid input");
+          break;
+        }
+        const targetPath = resolve(currentDir, args[0]);
+        const stat = await fs.stat(targetPath);
+        if (stat.isDirectory()) {
+          currentDir = targetPath;
+        } else {
+          console.log("Operation failed");
+        }
+      } catch {
+        console.log("Operation failed");
+      }
+      break;
+
     case "ls":
       try {
-        const filesArray = await readdir(filePath);
+        const filesArray = await readdir(currentDir);
         const result = filesArray
           .map((file) => {
             return {
@@ -53,40 +81,43 @@ rl.on("line", async (input) => {
           .sort((a, b) => a.Type.localeCompare(b.Type));
         console.table(result);
       } catch (err) {
-        throw new Error("FS operation failed");
+        console.log("Operation failed");
       }
       break;
+
     case "add":
       try {
         if (!args[0]) {
-          console.log("Please provide a file name.");
+          console.log("Invalid input");
           break;
         }
-        const fullPath = resolve(filePath, args[0]);
+        const fullPath = resolve(currentDir, args[0]);
         await fs.writeFile(fullPath, "", { flag: "wx" });
       } catch (err) {
-        throw new Error("FS operation failed");
+        console.log("Operation failed");
       }
       break;
+
     case "mkdir":
       try {
         if (!args[0]) {
-          console.log("Please provide a dir name.");
+          console.log("Invalid input");
           break;
         }
-        const fullPath = resolve(filePath, args[0]);
+        const fullPath = resolve(currentDir, args[0]);
         await mkdir(fullPath, { recursive: true });
       } catch (err) {
-        throw new Error("FS operation failed");
+        console.log("Operation failed");
       }
       break;
+
     case "cat":
       try {
         if (!args[0]) {
-          console.log("Please provide a file name.");
+          console.log("Invalid input");
           break;
         }
-        const fullPath = resolve(filePath, args[0]);
+        const fullPath = resolve(currentDir, args[0]);
 
         const readableStream = createReadStream(fullPath, {
           encoding: "utf-8",
@@ -99,20 +130,33 @@ rl.on("line", async (input) => {
           process.stdout.write("\n");
         });
       } catch (err) {
-        throw new Error("FS operation failed");
+        console.log("Operation failed");
       }
       break;
+
     case "rn":
+      if (!args[0] || !args[1]) {
+        console.log("Invalid input");
+        break;
+      }
       try {
-        await rename(resolve(filePath, args[0]), resolve(filePath, args[1]));
+        await rename(
+          resolve(currentDir, args[0]),
+          resolve(currentDir, args[1])
+        );
       } catch (err) {
-        throw new Error("FS operation failed");
+        console.log("Operation failed");
       }
       break;
+
     case "cp":
+      if (!args[0] || !args[1]) {
+        console.log("Invalid input");
+        break;
+      }
       try {
-        const readable = createReadStream(resolve(filePath, args[0]));
-        const writable = createWriteStream(resolve(filePath, args[1]));
+        const readable = createReadStream(resolve(currentDir, args[0]));
+        const writable = createWriteStream(resolve(currentDir, args[1]));
         readable.pipe(writable);
         writable.on("finish", () => {
           console.log("File copied successfully");
@@ -124,14 +168,18 @@ rl.on("line", async (input) => {
           console.error("Error reading file:", err);
         });
       } catch (err) {
-        console.error("Error copying file:", err);
-        throw new Error("FS operation failed");
+        console.log("Operation failed");
       }
       break;
+
     case "mv":
+      if (!args[0] || !args[1]) {
+        console.log("Invalid input");
+        break;
+      }
       try {
-        const sourcePath = resolve(filePath, args[0]);
-        const destinationInput = resolve(filePath, args[1]);
+        const sourcePath = resolve(currentDir, args[0]);
+        const destinationInput = resolve(currentDir, args[1]);
         const fileName = basename(sourcePath);
         const destinationPath = resolve(destinationInput, fileName);
 
@@ -149,22 +197,136 @@ rl.on("line", async (input) => {
           console.error("Error reading file:", err);
         });
       } catch (err) {
-        console.error("Error copying file:", err);
-        throw new Error("FS operation failed");
+        console.log("Operation failed");
       }
       break;
+
     case "rm":
+      if (!args[0]) {
+        console.log("Invalid input");
+        break;
+      }
       try {
-        const sourcePath = resolve(filePath, args[0]);
+        const sourcePath = resolve(currentDir, args[0]);
         await unlink(sourcePath);
       } catch (err) {
-        throw new Error("FS operation failed");
+        console.log("Operation failed");
       }
       break;
+
+    case "hash":
+      try {
+        if (!args[0]) {
+          console.log("Invalid input");
+          break;
+        }
+        const fileToHash = resolve(currentDir, args[0]);
+        const hash = crypto.createHash("sha256");
+        const stream = createReadStream(fileToHash);
+
+        stream.on("data", (chunk) => {
+          hash.update(chunk);
+        });
+
+        stream.on("end", () => {
+          console.log(hash.digest("hex"));
+        });
+      } catch (err) {
+        console.log("Operation failed");
+      }
+      break;
+
+    case "os":
+      try {
+        const flag = args[0];
+        switch (flag) {
+          case "--EOL":
+            console.log(JSON.stringify(os.EOL));
+            break;
+          case "--cpus":
+            const cpus = os.cpus();
+            console.log(`Total CPUs: ${cpus.length}`);
+            cpus.forEach((cpu, index) => {
+              console.log(
+                `CPU ${index + 1}: ${cpu.model}, ${cpu.speed / 1000} GHz`
+              );
+            });
+            break;
+          case "--homedir":
+            console.log(os.homedir());
+            break;
+          case "--username":
+            console.log(os.userInfo().username);
+            break;
+          case "--architecture":
+            console.log(process.arch);
+            break;
+          default:
+            console.log("Invalid input");
+        }
+      } catch {
+        console.log("Operation failed");
+      }
+      break;
+
+    case "compress":
+      try {
+        if (!args[0] || !args[1]) {
+          console.log("Invalid input");
+          break;
+        }
+        const source = resolve(currentDir, args[0]);
+        const destination = resolve(currentDir, args[1]);
+
+        const readable = createReadStream(source);
+        const writable = createWriteStream(destination);
+        const brotli = createBrotliCompress();
+
+        readable
+          .pipe(brotli)
+          .pipe(writable)
+          .on("finish", () => {
+            console.log("File compressed successfully");
+          })
+          .on("error", () => {
+            console.log("Operation failed");
+          });
+      } catch {
+        console.log("Operation failed");
+      }
+      break;
+
+    case "decompress":
+      try {
+        if (!args[0] || !args[1]) {
+          console.log("Invalid input");
+          break;
+        }
+        const source = resolve(currentDir, args[0]);
+        const destination = resolve(currentDir, args[1]);
+
+        const readable = createReadStream(source);
+        const writable = createWriteStream(destination);
+        const brotli = createBrotliDecompress();
+
+        readable
+          .pipe(brotli)
+          .pipe(writable)
+          .on("finish", () => {
+            console.log("File decompressed successfully");
+          })
+          .on("error", () => {
+            console.log("Operation failed");
+          });
+      } catch {
+        console.log("Operation failed");
+      }
+      break;
+
     default:
-      console.log("Unknown command");
+      console.log("Invalid input");
   }
-  console.log(`You are currently in ${__dirname}`);
+  console.log(`You are currently in ${currentDir}`);
   rl.prompt();
 });
 
